@@ -2,6 +2,9 @@ import streamlit as st
 from sbi_pdf_parser import run_pdf_parser_sbi
 from pdf_parser import run_pdf_parser
 from kotak_pdf_parser import kotak_pdf_parser
+from axis_bank_parser import axis_parser
+from rbl_bank_parser import rbl_parser
+from iob_bank_parser import run_pdf_parser_iob
 
 # === FIRST: set page config ===
 st.set_page_config(page_title="Bank Statement Toolkit", layout="wide")
@@ -29,7 +32,7 @@ if authenticate():
 
     mode = st.sidebar.selectbox(
         "Choose a Bank:",
-        ["Kotak Bank Statement", "SBI Bank Statement", "CBI Bank Statement"]
+        ["Kotak Bank Statement", "SBI Bank Statement", "CBI Bank Statement", "Axis Bank Statement", "RBL Bank Statement", "IOB Bank Statement"]
     )
 
     if mode == "SBI Bank Statement":
@@ -38,3 +41,9 @@ if authenticate():
         run_pdf_parser()
     elif mode == "Kotak Bank Statement":
         kotak_pdf_parser()
+    elif mode == "Axis Bank Statement":
+        axis_parser()
+    elif mode == "RBL Bank Statement":
+        rbl_parser()
+    elif mode == "IOB Bank Statement":
+        run_pdf_parser_iob()

@@ -183,138 +183,83 @@ def kotak_pdf_parser():
         """Safely parse balance token to float; returns 0.0 on failure."""
         return parse_amount(val)
 
+    def is_date(text):
+        return re.match(r"^\d{2}-\d{2}-\d{4}$", text.strip()) is not None
+
+    def parse_balance(val):
+        return float(val.replace("(Cr)", "").replace("(Dr)", "").replace(",", "").strip())
+
+    def parse_amount(val):
+        try:
+            return float(val.replace(",", "").strip())
+        except:
+            return 0.0
 
     # ------------------ Transaction Parser (fixed merging + narration) ------------------ #
-    def parse_transactions(file):
+    def parse_transactions(file, debug=False):
         transactions = []
+        buffer = None
         keywords = []
-
-        date_start_re = re.compile(r"^\d{2}-\d{2}-\d{4}\b")  # lines that start a transaction
-        frag_month_year_re = re.compile(r"^\d{2}-\d{4}$")    # continuation like "06-2022"
 
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                text = page.extract_text() or ""
-                raw_lines = [l.strip() for l in text.split("\n") if l and l.strip()]
+                lines = [l.strip() for l in page.extract_text().split("\n") if l.strip()]
 
-                # Merge broken lines: start buffers only when we see a date or "B/F"
-                # Merge broken lines: handle cases like "to 30-" + "06-2022"
-                merged_lines = []
-                buffer = None
-                raw_len = len(raw_lines)
-                i = 0
+                for ln in lines:
+                    parts = ln.split()
 
-                while i < raw_len:
-                    ln = raw_lines[i].strip()
-
-                    if date_start_re.match(ln) or ln.startswith("B/F"):
-                        # push old buffer
-                        if buffer:
-                            merged_lines.append(buffer.strip())
-                        buffer = ln
-                        i += 1
-                        continue
-
-                    if buffer is None:
-                        i += 1
-                        continue
-
-                    # CASE: line broken across rows like "to 30-" + "06-2022"
-                    if buffer.endswith("-") and not date_start_re.match(ln):
-                        buffer = buffer.rstrip("-") + ln   # join seamlessly
-                        i += 1
-                        continue
-
-                    # otherwise treat as continuation
-                    buffer += " " + ln
-                    i += 1
-
-                # push last
-                if buffer:
-                    merged_lines.append(buffer.strip())
-
-
-                # Now parse merged lines
-                for line in merged_lines:
-                    # skip obvious non-transaction lines
-                    if not line:
-                        continue
-                    if line.startswith("Statement Summary") or line.startswith("Date Narration") or line.startswith("Date "):
-                        continue
-
-                    parts = line.split()
-                    if not parts:
-                        continue
-
-                    # Opening balance
-                    if line.startswith("B/F"):
-                        # Last token should be balance
-                        bal_tok = parts[-1]
-                        balance = parse_balance(bal_tok)
+                    # --- Case 1: B/F or C/F ---
+                    if ln.startswith("B/F") or ln.startswith("C/F"):
+                        balance = parse_balance(parts[-1])
                         transactions.append({
-                            "Date": "B/F",
-                            "Narration": "Opening Balance",
-                            "Chq/Ref No": "",
+                            "Date": None,
+                            "Narration": "BROUGHT FORWARD" if ln.startswith("B/F") else "CARRIED FORWARD",
+                            "Chq/Ref No": None,
                             "Withdrawal (Dr)": 0.0,
                             "Deposit (Cr)": 0.0,
                             "Balance": balance
                         })
                         continue
 
-                    # If first token is not a date, skip (safety)
-                    if not date_start_re.match(parts[0]):
-                        continue
+                    # --- Case 2: New transaction row ---
+                    if is_date(parts[0]):
+                        if buffer:  # save the previous transaction
+                            transactions.append(buffer)
 
-                    # Collect numeric token indices (amount-like) — careful to avoid account numbers
-                    num_indices = [i for i, t in enumerate(parts) if is_amount_token(t)]
-                    if not num_indices:
-                        # nothing recognizable as amounts -> skip
-                        continue
+                        date = parts[0]
+                        balance = parse_balance(parts[-1]) if len(parts) >= 2 else 0.0
+                        deposit = parse_amount(parts[-2]) if len(parts) >= 3 else 0.0
+                        withdrawal = parse_amount(parts[-3]) if len(parts) >= 4 else 0.0
 
-                    # The last numeric-like token is balance
-                    balance_idx = num_indices[-1]
-                    balance = parse_balance(parts[balance_idx])
+                        # Narration = everything between Date and the last 3 tokens
+                        narration = " ".join(parts[1:-2]) if len(parts) > 3 else ""
 
-                    # deposit is the numeric token just before balance (if present)
-                    deposit = parse_amount(parts[num_indices[-2]]) if len(num_indices) >= 2 else 0.0
-                    # withdrawal is the numeric token before deposit (if present)
-                    withdrawal = parse_amount(parts[num_indices[-3]]) if len(num_indices) >= 3 else 0.0
+                        buffer = {
+                            "Date": date,
+                            "Narration": narration,
+                            "Chq/Ref No": None,
+                            "Withdrawal (Dr)": withdrawal,
+                            "Deposit (Cr)": deposit,
+                            "Balance": balance
+                        }
 
-                    # narration ends before the earliest amount used for withdrawal (if present),
-                    # else before deposit or balance accordingly
-                    if len(num_indices) >= 3:
-                        narration_end = num_indices[-3]
-                    elif len(num_indices) == 2:
-                        narration_end = num_indices[-2]
                     else:
-                        narration_end = num_indices[-1]
+                        # --- Case 3: Continuation of narration ---
+                        if buffer:
+                            buffer["Narration"] += " " + ln.strip()
 
-                    # narration is everything between date token (index 0) and narration_end
-                    narration_tokens = parts[1:narration_end]
-                    narration = " ".join(narration_tokens).strip()
+                # flush last buffer of this page
+                if buffer:
+                    transactions.append(buffer)
+                    buffer = None
 
-                    # fix awkward trailing hyphens in narration (e.g. "to 30-")
-                    narration = re.sub(r"\s+-\s*$", "-", narration)               # remove trailing space-dash
-                    narration = re.sub(r"-\s+(\d{2}-\d{4})", r"-\1", narration)    # ensure "30- 06-2022" -> "30-06-2022"
+        # collect keyword counts
+        for t in transactions:
+            for w in re.split(r"\W+", t["Narration"] or ""):
+                if len(w) > 3:
+                    keywords.append(w.upper())
 
-                    # collect keywords for frequency
-                    for w in re.split(r"\W+", narration):
-                        if len(w) > 3:
-                            keywords.append(w.upper())
-
-                    transactions.append({
-                        "Date": parts[0],
-                        "Narration": narration,
-                        "Chq/Ref No": "",
-                        "Withdrawal (Dr)": withdrawal,
-                        "Deposit (Cr)": deposit,
-                        "Balance": balance
-                    })
-
-        df = pd.DataFrame(transactions)
-        return df, Counter(keywords)
-
-
+        return pd.DataFrame(transactions), Counter(keywords)
     # ------------------ Streamlit UI ------------------ #
     def main():
         st.set_page_config(page_title="Kotak Bank Statement Parser", page_icon="🏦", layout="wide")
@@ -381,11 +326,11 @@ def kotak_pdf_parser():
         else:
             st.info("ℹ️ No frequent keywords found.")
 
-        # Excel download
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False)
-        st.download_button("📥 Download as Excel", output.getvalue(), file_name="kotak_bank_parsed.xlsx")
+        # # Excel download
+        # output = BytesIO()
+        # with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        #     df.to_excel(writer, index=False)
+        # st.download_button("📥 Download as Excel", output.getvalue(), file_name="kotak_bank_parsed.xlsx")
 
     main()
 

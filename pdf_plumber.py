@@ -1,7 +1,7 @@
 import pdfplumber
 
-# === CONFIG ===
-PDF_FILE = "kotak_stmt2.pdf"   # replace with your file name
+
+PDF_FILE = "iob stmt.pdf"   
 
 def extract_text_from_pdf(pdf_path):
     all_text = []
@@ -17,9 +17,7 @@ def extract_text_from_pdf(pdf_path):
 if __name__ == "__main__":
     text_data = extract_text_from_pdf(PDF_FILE)
     
-    # Print to console
     print(text_data)
-    
-    # Save to a .txt file so you can upload here
-    with open("kotak_extracted_text.txt", "w", encoding="utf-8") as f:
+
+    with open("iob_extracted_text.txt", "w", encoding="utf-8") as f:
         f.write(text_data)
