@@ -154,7 +154,14 @@ def run_pdf_parser():
                         extra = line.replace(". .", "").strip().strip('.')
                         last_txn["More Info"] += " " + extra
 
-        df = pd.DataFrame(transactions)
+            df = pd.DataFrame(transactions)
+
+        # Replace None/NaN with empty string for display
+        df = df.fillna("")
+
+        # ✅ Convert Balance column to float
+        df["Balance"] = pd.to_numeric(df["Balance"], errors="coerce")
+
 
         # Replace None/NaN with empty string for display
         df = df.fillna("")
@@ -162,7 +169,10 @@ def run_pdf_parser():
 
         return df, Counter(all_keys), opening_balance, direction_counts
 
-    # === Streamlit UI ===
+    
+
+
+
     def main():
         st.set_page_config(page_title="CBI Bank Statement Parser", page_icon="🏦", layout="wide")
 
@@ -190,16 +200,104 @@ def run_pdf_parser():
         if df.empty:
             st.warning("⚠ No transactions found.")
         else:
-            # Transaction stats
             # Convert Debit & Credit safely
             df["Debit"] = pd.to_numeric(df["Debit"], errors="coerce").fillna(0.0)
             df["Credit"] = pd.to_numeric(df["Credit"], errors="coerce").fillna(0.0)
+            df["Value Date"] = pd.to_datetime(df["Value Date"], errors="coerce")
 
-            # Transaction stats
+            # --- 📊 Filters Section ---
+            st.subheader("🔎 Filters")
+
+            # 🔹 Date Range & Keyword Filter (50% width each)
+            min_date = df["Value Date"].min()
+            max_date = df["Value Date"].max()
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                date_range = st.date_input(
+                    "📅 Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+
+            with col2:
+                keyword_options = []
+                if "Details" in df.columns:
+                    keyword_counts = (
+                        df["Details"]
+                        .astype(str)
+                        .str.split()
+                        .explode()
+                        .value_counts()
+                        .to_dict()
+                    )
+                    keyword_df = (
+                        pd.DataFrame(keyword_counts.items(), columns=["Keyword", "Count"])
+                        .sort_values(by="Count", ascending=False)
+                    )
+                    keyword_df = keyword_df[keyword_df["Count"] > 1]
+                    keyword_options = keyword_df["Keyword"].tolist()
+                selected_keyword = st.selectbox("🔑 Frequent Keyword", ["All"] + keyword_options) if keyword_options else "All"
+
+            # 🔹 Transaction Type
+            txn_type = st.selectbox("💳 Transaction Type", ["All", "Debit Only", "Credit Only"])
+
+            # 🔹 Amount Range
+            max_amt = float(df[["Debit", "Credit"]].max().max())
+            amount_range = st.slider("💰 Transaction Amount Range", 0.0, max_amt, (0.0, max_amt))
+
+            # 🔹 Balance Range
+            balance_range = st.slider("🏦 Balance Range",
+                                    float(df["Balance"].min()),
+                                    float(df["Balance"].max()),
+                                    (float(df["Balance"].min()), float(df["Balance"].max())))
+
+            # 🔹 Free Text Search
+            search_text = st.text_input("🔍 Search Transactions (e.g. Amazon, Salary, UPI)")
+
+            # 🔹 Month & Year
+            df["Year"] = df["Value Date"].dt.year
+            df["Month"] = df["Value Date"].dt.strftime("%B")
+            year_selected = st.selectbox("📆 Select Year", ["All"] + sorted(df["Year"].unique().tolist()))
+            month_selected = st.selectbox("📆 Select Month", ["All"] + sorted(df["Month"].unique().tolist()))
+
+          
+
+            # --- Apply Filters ---
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_date, end_date = date_range
+                df = df[(df["Value Date"] >= pd.to_datetime(start_date)) & (df["Value Date"] <= pd.to_datetime(end_date))]
+
+            if selected_keyword != "All":
+                df = df[df["Details"].str.contains(selected_keyword, case=False, na=False)]
+
+            if txn_type == "Debit Only":
+                df = df[df["Debit"] > 0]
+            elif txn_type == "Credit Only":
+                df = df[df["Credit"] > 0]
+
+            df = df[
+                ((df["Debit"] >= amount_range[0]) & (df["Debit"] <= amount_range[1])) |
+                ((df["Credit"] >= amount_range[0]) & (df["Credit"] <= amount_range[1]))
+            ]
+
+            df = df[(df["Balance"] >= balance_range[0]) & (df["Balance"] <= balance_range[1])]
+
+            if search_text:
+                df = df[df["Details"].str.contains(search_text, case=False, na=False)]
+
+            if year_selected != "All":
+                df = df[df["Year"] == year_selected]
+            if month_selected != "All":
+                df = df[df["Month"] == month_selected]
+
+            # df = df.sort_values(by=["Debit", "Credit"], ascending=False).head(top_n)
+
+            # ✅ Recalculate stats on filtered df
             total_txn = len(df)
             debit_txn = (df["Debit"] > 0).sum()
             credit_txn = (df["Credit"] > 0).sum()
-
             total_debit_amount = df["Debit"].sum()
             total_credit_amount = df["Credit"].sum()
             total_balance = total_credit_amount - total_debit_amount
@@ -223,21 +321,25 @@ def run_pdf_parser():
             display_df = df.fillna("")
             st.dataframe(display_df, use_container_width=True)
 
-            # Frequent transaction keywords
-            st.subheader("🔑 Frequent Transaction Keywords")
+            # Show frequent keyword chart again
+            if "Details" in df.columns and not df.empty:
+                st.subheader("📊 Frequent Transaction Keywords")
+                keyword_counts_filtered = (
+                    df["Details"].astype(str).str.split().explode().value_counts().to_dict()
+                )
+                keyword_df_filtered = (
+                    pd.DataFrame(keyword_counts_filtered.items(), columns=["Keyword", "Count"])
+                    .sort_values(by="Count", ascending=False)
+                )
+                keyword_df_filtered = keyword_df_filtered[keyword_df_filtered["Count"] > 1]
 
-            direction_df = (
-                pd.DataFrame(direction_counts.items(), columns=["Keyword", "Count"])
-                .sort_values(by="Count", ascending=False)
-            )
-            direction_df = direction_df[direction_df["Count"] > 1]
+                if not keyword_df_filtered.empty:
+                    st.bar_chart(keyword_df_filtered.set_index("Keyword"))
+                    with st.expander("📋 Detailed Keyword Counts"):
+                        st.dataframe(keyword_df_filtered, use_container_width=True)
+                else:
+                    st.info("ℹ️ No frequent keywords found.")
 
-            if not direction_df.empty:
-                st.bar_chart(direction_df.set_index("Keyword"))
-                with st.expander("📋 Detailed Keyword Counts"):
-                    st.dataframe(direction_df, use_container_width=True)
-            else:
-                st.info("ℹ️ No frequent keywords found.")
 
     main()
     
